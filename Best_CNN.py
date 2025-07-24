@@ -32,6 +32,8 @@ def load_data_from_dir(directory, image_size=(75, 75)):
             continue
         for image_name in os.listdir(class_dir):
             if image_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+
+                # Pre-processing check:
                 file_path = os.path.join(class_dir, image_name)
                 img = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
                 if img is not None:
@@ -50,38 +52,38 @@ def load_data_from_dir(directory, image_size=(75, 75)):
     return np.array(images), np.array(labels)
 
 
-def build_cnn(hp, input_shape=(75, 75, 1), num_classes=8):
+def build_cnn(hyperparameter, input_shape=(75, 75, 1), num_classes=8):
     """Builds a CNN model using hyperparameter tuning with Keras Tuner."""
     model = models.Sequential()
     model.add(Input(shape=input_shape))
 
     # Convolution Block 1
-    filters_1 = hp.Choice('filters_1', [16, 32])
+    filters_1 = hyperparameter.Choice('filters_1', [16, 32])
     model.add(layers.Conv2D(filters_1, (7, 7), padding='same', activation='relu'))
     model.add(layers.Conv2D(filters_1, (7, 7), padding='same', activation='relu'))
     model.add(layers.AveragePooling2D((2, 2), padding='same'))
-    model.add(layers.Dropout(hp.Float('dropout_1', 0.3, 0.6, step=0.1)))
+    model.add(layers.Dropout(hyperparameter.Float('dropout_1', 0.3, 0.6, step=0.1)))
 
     # Convolution Block 2
-    filters_2 = hp.Choice('filters_2', [32, 64])
+    filters_2 = hyperparameter.Choice('filters_2', [32, 64])
     model.add(layers.Conv2D(filters_2, (5, 5), padding='same', activation='relu'))
     model.add(layers.Conv2D(filters_2, (5, 5), padding='same', activation='relu'))
     model.add(layers.AveragePooling2D((2, 2), padding='same'))
-    model.add(layers.Dropout(hp.Float('dropout_2', 0.3, 0.6, step=0.1)))
+    model.add(layers.Dropout(hyperparameter.Float('dropout_2', 0.3, 0.6, step=0.1)))
 
     # Convolution Block 3
-    filters_3 = hp.Choice('filters_3', [64, 128])
+    filters_3 = hyperparameter.Choice('filters_3', [64, 128])
     model.add(layers.Conv2D(filters_3, (3, 3), padding='same', activation='relu'))
     model.add(layers.Conv2D(filters_3, (3, 3), padding='same', activation='relu'))
     model.add(layers.AveragePooling2D((2, 2), padding='same'))
-    model.add(layers.Dropout(hp.Float('dropout_3', 0.3, 0.6, step=0.1)))
+    model.add(layers.Dropout(hyperparameter.Float('dropout_3', 0.3, 0.6, step=0.1)))
 
     # Convolution Block 4
-    filters_4 = hp.Choice('filters_4', [128, 256])
+    filters_4 = hyperparameter.Choice('filters_4', [128, 256])
     model.add(layers.Conv2D(filters_4, (3, 3), padding='same', activation='relu'))
     model.add(layers.Conv2D(filters_4, (3, 3), padding='same', activation='relu'))
     model.add(layers.AveragePooling2D((2, 2), padding='same'))
-    model.add(layers.Dropout(hp.Float('dropout_4', 0.3, 0.6, step=0.1)))
+    model.add(layers.Dropout(hyperparameter.Float('dropout_4', 0.3, 0.6, step=0.1)))
 
     # Final Convolution Layer (no activation on last conv)
     model.add(layers.Conv2D(256, (3, 3), padding='same', activation='relu'))
@@ -94,7 +96,7 @@ def build_cnn(hp, input_shape=(75, 75, 1), num_classes=8):
     # Compile with tunable learning rate
     model.compile(
         optimizer=keras.optimizers.Adam(
-            learning_rate=hp.Float('learning_rate', 1e-4, 1e-2, sampling='LOG')
+            learning_rate=hyperparameter.Float('learning_rate', 1e-4, 1e-2, sampling='LOG')
         ),
         loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
