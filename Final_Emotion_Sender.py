@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from keras.models import load_model
 from collections import deque, Counter
+import time
 
 # === CNN Setup ===
 model = load_model("CNNs/Final_CNN.keras")
@@ -30,8 +31,8 @@ def preprocess_face(gray_face):
     return face_input
 
 # === Emotion Sender Setup ===
-EMOTION_HOST = 'localhost'  # IP address of receiver project
-EMOTION_PORT = 6000         # Port receiver project is listening on
+EMOTION_HOST = 'localhost'
+EMOTION_PORT = 6000
 
 def send_emotion_label(label):
     try:
@@ -43,84 +44,112 @@ def send_emotion_label(label):
     except Exception as e:
         print(f"[!] Error sending emotion label: {e}")
 
-# === Socket Setup for receiving video from Pepper ===
-HOST = ''  # Listen on all interfaces
+# === Robust connection loop ===
+HOST = ''
 PORT = 5000
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((HOST, PORT))
-server_socket.listen(1)
-print("Waiting for Pepper to connect...")
 
-conn, addr = server_socket.accept()
-print("Connected by", addr)
-
-try:
+def start_server():
     while True:
-        # Receive 4-byte header indicating JPEG size
-        raw_len = b''
-        while len(raw_len) < 4:
-            more = conn.recv(4 - len(raw_len))
-            if not more:
-                raise Exception("Connection closed")
-            raw_len += more
-        frame_len = struct.unpack('>I', raw_len)[0]
+        try:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_socket.bind((HOST, PORT))
+            server_socket.listen(1)
+            print("\n[Classifier] Waiting for Pepper to connect on port", PORT)
+            conn, addr = server_socket.accept()
+            print("[Classifier] Connected by", addr)
 
-        # Receive JPEG data
-        frame_data = b''
-        while len(frame_data) < frame_len:
-            more = conn.recv(frame_len - len(frame_data))
-            if not more:
-                raise Exception("Connection closed")
-            frame_data += more
+            handle_connection(conn)
 
-        # Decode the frame
-        nparr = np.frombuffer(frame_data, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame is None:
-            continue
+        except Exception as e:
+            print("[Classifier] Server error:", e)
+            time.sleep(2)
+        finally:
+            try:
+                server_socket.close()
+            except:
+                pass
 
-        # Convert to grayscale for face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
+def handle_connection(conn):
+    try:
+        while True:
+            # === Receive 4-byte JPEG size header ===
+            raw_len = b''
+            while len(raw_len) < 4:
+                more = conn.recv(4 - len(raw_len))
+                if not more:
+                    raise Exception("Connection closed by Pepper")
+                raw_len += more
+            frame_len = struct.unpack('>I', raw_len)[0]
 
-        for (x, y, w, h) in faces:
-            face_gray = gray[y:y+h, x:x+w]
-            face_input = preprocess_face(face_gray)
+            # === Receive JPEG image bytes ===
+            frame_data = b''
+            while len(frame_data) < frame_len:
+                more = conn.recv(frame_len - len(frame_data))
+                if not more:
+                    raise Exception("Connection closed during frame")
+                frame_data += more
 
-            predictions = model.predict(face_input, verbose=0)[0]
-            predictions[0] *= 0.1  # reduce angry
-            predictions[1] *= 5    # boost confused
-            predictions[2] *= 2    # boost disgust
-            predictions[6] *= 0.5  # reduce sad
-            predictions /= np.sum(predictions)
+            nparr = np.frombuffer(frame_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
 
-            class_id = np.argmax(predictions)
-            prediction_buffer.append(class_id)
-            most_common_id = Counter(prediction_buffer).most_common(1)[0][0]
-            emotion_label = class_mapping[most_common_id]
+            # === Emotion Detection ===
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
 
-            # === Send emotion label to other project ===
-            send_emotion_label(emotion_label)
+            for (x, y, w, h) in faces:
+                face_gray = gray[y:y+h, x:x+w]
+                face_input = preprocess_face(face_gray)
 
-            print("\nEmotion probabilities:")
-            for idx, prob in enumerate(predictions):
-                print(f"{class_mapping[idx]}: {prob * 100:.2f}%")
+                predictions = model.predict(face_input, verbose=0)[0]
+                predictions[0] *= 0.1  # angry
+                predictions[1] *= 5    # confused
+                predictions[2] *= 2    # disgust
+                predictions[6] *= 0.5  # sad
+                predictions /= np.sum(predictions)
 
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.putText(frame, f"{emotion_label} ({predictions[most_common_id]*100:.1f}%)",
-                        (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+                class_id = np.argmax(predictions)
+                prediction_buffer.append(class_id)
+                most_common_id = Counter(prediction_buffer).most_common(1)[0][0]
+                emotion_label = class_mapping[most_common_id]
 
-            top_indices = np.argsort(predictions)[::-1][:3]
-            for i, idx in enumerate(top_indices):
-                label = f"{class_mapping[idx]}: {predictions[idx]*100:.1f}%"
-                cv2.putText(frame, label, (x, y + h + 20 + i*25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+                # === Send emotion label ===
+                send_emotion_label(emotion_label)
 
-        cv2.imshow("Pepper Emotion Detection", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+                print("\nEmotion probabilities:")
+                for idx, prob in enumerate(predictions):
+                    print(f"{class_mapping[idx]}: {prob * 100:.2f}%")
 
-finally:
-    conn.close()
-    server_socket.close()
-    cv2.destroyAllWindows()
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(frame, f"{emotion_label} ({predictions[most_common_id]*100:.1f}%)",
+                            (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+
+                top_indices = np.argsort(predictions)[::-1][:3]
+                for i, idx in enumerate(top_indices):
+                    label = f"{class_mapping[idx]}: {predictions[idx]*100:.1f}%"
+                    cv2.putText(frame, label, (x, y + h + 20 + i*25),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+
+            cv2.imshow("Pepper Emotion Detection", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                raise KeyboardInterrupt()
+
+    except KeyboardInterrupt:
+        print("[Classifier] Interrupted by user.")
+        conn.close()
+        cv2.destroyAllWindows()
+        exit()
+
+    except Exception as e:
+        print("[Classifier] Connection lost:", e)
+
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
+
+if __name__ == "__main__":
+    start_server()
