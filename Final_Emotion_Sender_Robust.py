@@ -20,32 +20,57 @@ class_mapping = {
 }
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 IMG_SIZE = (75, 75)
-
 REPEAT_THRESHOLD = 2  # Number of repeats needed to resend same emotion
 
 def preprocess_face(gray_face):
     face_resized = cv2.resize(gray_face, IMG_SIZE)
     face_equalized = cv2.equalizeHist(face_resized)
     face_normalized = face_equalized / 255.0
-    face_normalized = np.expand_dims(face_normalized, axis=-1)  # (75,75,1)
-    face_input = np.expand_dims(face_normalized, axis=0)        # (1,75,75,1)
+    face_normalized = np.expand_dims(face_normalized, axis=-1)
+    face_input = np.expand_dims(face_normalized, axis=0)
     return face_input
 
 # === Emotion Sender Setup ===
-EMOTION_HOST = 'localhost'
+EMOTION_HOST = '192.168.0.102'  # Use Pepper's IP
 EMOTION_PORT = 6000
 
-def send_emotion_label(label):
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as emotion_socket:
-            emotion_socket.connect((EMOTION_HOST, EMOTION_PORT))
-            emotion_socket.sendall(label.encode('utf-8'))
-    except ConnectionRefusedError:
-        print("[!] Emotion receiver is not running or not reachable.")
-    except Exception as e:
-        print(f"[!] Error sending emotion label: {e}")
+class EmotionSender:
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.socket = None
+        self.connect()
 
-# === Robust connection loop ===
+    def connect(self):
+        while True:
+            try:
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.connect((self.host, self.port))
+                print("[EmotionSender] Connected to emotion receiver.")
+                break
+            except Exception as e:
+                print("[EmotionSender] Connection failed, retrying in 1s...")
+                time.sleep(1)
+
+    def send(self, label):
+        try:
+            self.socket.sendall(label.encode('utf-8'))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+            print("[EmotionSender] Connection lost. Reconnecting...")
+            self.connect()
+            try:
+                self.socket.sendall(label.encode('utf-8'))
+            except Exception as e:
+                print("[EmotionSender] Failed to send after reconnect:", e)
+
+    def close(self):
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+
+# === Video Receiver Server Setup ===
 HOST = ''
 PORT = 5000
 
@@ -60,7 +85,8 @@ def start_server():
             conn, addr = server_socket.accept()
             print("[Classifier] Connected by", addr)
 
-            handle_connection(conn)
+            emotion_sender = EmotionSender(EMOTION_HOST, EMOTION_PORT)
+            handle_connection(conn, emotion_sender)
 
         except Exception as e:
             print("[Classifier] Server error:", e)
@@ -71,7 +97,7 @@ def start_server():
             except:
                 pass
 
-def handle_connection(conn):
+def handle_connection(conn, emotion_sender):
     prediction_buffer = deque(maxlen=REPEAT_THRESHOLD)
     last_sent_emotion = None
 
@@ -108,8 +134,8 @@ def handle_connection(conn):
                 face_input = preprocess_face(face_gray)
 
                 predictions = model.predict(face_input, verbose=0)[0]
-                predictions[0] *= 0.1  # angry
-                predictions[1] *= 5    # confused
+                predictions[0] *= 1  # angry
+                predictions[1] *= 8    # confused
                 predictions[2] *= 2    # disgust
                 predictions[3] *= 0.7  # fear
                 predictions[6] *= 0.5  # sad
@@ -118,19 +144,16 @@ def handle_connection(conn):
                 class_id = np.argmax(predictions)
                 emotion_label = class_mapping[class_id]
 
-                # --- Your new logic for sending emotion ---
+                # Emotion logic
                 prediction_buffer.append(emotion_label)
 
                 if emotion_label != last_sent_emotion:
-                    # Different emotion: send immediately & clear buffer
-                    send_emotion_label(emotion_label)
+                    emotion_sender.send(emotion_label)
                     last_sent_emotion = emotion_label
                     prediction_buffer.clear()
-                else:
-                    # Same emotion: send only if repeated enough times
-                    if prediction_buffer.count(emotion_label) >= REPEAT_THRESHOLD:
-                        send_emotion_label(emotion_label)
-                        prediction_buffer.clear()
+                elif prediction_buffer.count(emotion_label) >= REPEAT_THRESHOLD:
+                    emotion_sender.send(emotion_label)
+                    prediction_buffer.clear()
 
                 print("\nEmotion probabilities:")
                 for idx, prob in enumerate(predictions):
@@ -164,6 +187,7 @@ def handle_connection(conn):
             conn.close()
         except:
             pass
+        emotion_sender.close()
 
 if __name__ == "__main__":
     start_server()
