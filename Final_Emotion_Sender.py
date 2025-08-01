@@ -108,7 +108,7 @@ def handle_connection(conn):
                 face_input = preprocess_face(face_gray)
 
                 predictions = model.predict(face_input, verbose=0)[0]
-                predictions[0] *= 0.1  # angry
+                predictions[0] *= 1    # angry
                 predictions[1] *= 5    # confused
                 predictions[2] *= 2    # disgust
                 predictions[3] *= 0.7  # fear
